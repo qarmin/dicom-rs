@@ -170,7 +170,7 @@ where
                     value = Some(map.next_value()?);
                 }
                 "InlineBinary" => {
-                    if values.is_some() {
+                    if value.is_some() {
                         return Err(A::Error::custom(
                             "\"InlineBinary\" conflicts with \"Value\"",
                         ));
@@ -186,7 +186,7 @@ where
                     inline_binary = Some(val);
                 }
                 "BulkDataURI" => {
-                    if values.is_some() {
+                    if value.is_some() {
                         return Err(A::Error::custom("\"BulkDataURI\" conflicts with \"Value\""));
                     }
 
