@@ -78,7 +78,7 @@ impl Decode for ExplicitVRBigEndianDecoder {
                 // read 2 bytes for the data length
                 source
                     .read_exact(&mut buf[0..2])
-                    .context(ReadItemLengthSnafu)?;
+                    .context(ReadLengthSnafu)?;
                 bytes_read = 8;
                 u32::from(BigEndian::read_u16(&buf[0..2]))
             }
