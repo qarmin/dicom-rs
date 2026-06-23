@@ -272,12 +272,12 @@ fn update_from_img(obj: &mut DefaultDicomObject, img: &DynamicImage, verbose: bo
     obj.put(DataElement::new(
         tags::COLUMNS,
         VR::US,
-        PrimitiveValue::from(width as u16),
+        PrimitiveValue::from(u16::try_from(width).unwrap_or(u16::MAX)),
     ));
     obj.put(DataElement::new(
         tags::ROWS,
         VR::US,
-        PrimitiveValue::from(height as u16),
+        PrimitiveValue::from(u16::try_from(height).unwrap_or(u16::MAX)),
     ));
     obj.put(DataElement::new(
         tags::BITS_ALLOCATED,
