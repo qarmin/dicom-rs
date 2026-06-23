@@ -328,17 +328,19 @@ impl TextCodec for CharsetImpl {
 
 fn decode_text_trap(
     _decoder: &mut dyn RawDecoder,
-    input: &[u8],
+    _input: &[u8],
     output: &mut dyn StringWriter,
 ) -> bool {
-    let c = input[0];
-    let o0 = c & 7;
-    let o1 = (c & 56) >> 3;
-    let o2 = (c & 192) >> 6;
-    output.write_char('\\');
-    output.write_char((o2 + b'0') as char);
-    output.write_char((o1 + b'0') as char);
-    output.write_char((o0 + b'0') as char);
+    // Use a plain '?' instead of an escape sequence built from `\` followed
+    // by digits: `\` is the value-multiplicity delimiter for string VRs, so
+    // emitting a literal backslash here would silently change the number of
+    // values once the string is re-encoded and parsed again.
+    //
+    // `?` is used (rather than e.g. the Unicode replacement character) so
+    // that it round-trips to a fixed point: it is encodable in every
+    // character set used here and decodes back to itself, so re-writing and
+    // re-reading an already-decoded value does not change it further.
+    output.write_char('?');
     true
 }
 
@@ -362,7 +364,11 @@ macro_rules! decl_character_set {
             }
 
             fn encode(&self, text: &str) -> EncodeResult<Vec<u8>> {
-                $val.encode(text, EncoderTrap::Strict)
+                // `Replace` instead of `Strict`: a string that was decoded
+                // through `decode_text_trap` may contain characters (e.g.
+                // U+FFFD) that this charset cannot represent, and writing
+                // a DICOM object back out should not panic over that.
+                $val.encode(text, EncoderTrap::Replace)
                     .map_err(|message| EncodeCustomSnafu { message }.build())
             }
         }
@@ -387,8 +393,12 @@ impl TextCodec for DefaultCharacterSetCodec {
     }
 
     fn encode(&self, text: &str) -> EncodeResult<Vec<u8>> {
+        // `Replace` instead of `Strict`: a string that was decoded
+        // through `decode_text_trap` may contain characters (e.g.
+        // U+FFFD) that this charset cannot represent, and writing
+        // a DICOM object back out should not panic over that.
         ISO_8859_1
-            .encode(text, EncoderTrap::Strict)
+            .encode(text, EncoderTrap::Replace)
             .map_err(|message| EncodeCustomSnafu { message }.build())
     }
 }
