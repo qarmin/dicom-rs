@@ -53,7 +53,8 @@ impl Fragments {
             fragment_size + 1
         };
 
-        let number_of_fragments = (data.len() as f32 / fragment_size as f32).ceil() as u32;
+        let number_of_fragments =
+            u32::try_from(data.len().div_ceil(fragment_size as usize)).unwrap_or(u32::MAX);
 
         // Calculate the encapsulated size. If necessary pad the vector with zeroes so all the
         // chunks have the same fragment_size
