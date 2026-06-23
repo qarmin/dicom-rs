@@ -272,12 +272,14 @@ impl AsRange for DicomTime {
                 Some((f, fp)) => f * u32::pow(10, 6 - <u32>::from(fp)),
             },
         );
+        // chrono encodes leap seconds as second=59, microsecond in 1_000_000..2_000_000
+        let (s, f) = if *s == 60 { (59u8, f + 1_000_000) } else { (*s, f) };
 
-        NaiveTime::from_hms_micro_opt((*h).into(), (*m).into(), (*s).into(), f).context(
+        NaiveTime::from_hms_micro_opt((*h).into(), (*m).into(), s.into(), f).context(
             InvalidTimeMicroSnafu {
                 h: *h as u32,
                 m: *m as u32,
-                s: *s as u32,
+                s: s as u32,
                 f,
             },
         )
@@ -294,11 +296,14 @@ impl AsRange for DicomTime {
                 }
             },
         );
-        NaiveTime::from_hms_micro_opt((*h).into(), (*m).into(), (*s).into(), f).context(
+        // chrono encodes leap seconds as second=59, microsecond in 1_000_000..2_000_000
+        let (s, f) = if *s == 60 { (59u8, f + 1_000_000) } else { (*s, f) };
+
+        NaiveTime::from_hms_micro_opt((*h).into(), (*m).into(), s.into(), f).context(
             InvalidTimeMicroSnafu {
                 h: *h as u32,
                 m: *m as u32,
-                s: *s as u32,
+                s: s as u32,
                 f,
             },
         )
