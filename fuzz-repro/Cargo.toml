@@ -1,0 +1,13 @@
+[package]
+name = "dicom-fuzz-repro"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+dicom-core = { path = "../core" }
+dicom-encoding = { path = "../encoding" }
+dicom-parser = { path = "../parser" }
+dicom-object = { path = "../object" }
+dicom-pixeldata = { path = "../pixeldata" }
+dicom-transfer-syntax-registry = { path = "../transfer-syntax-registry" }

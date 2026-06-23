@@ -21,6 +21,7 @@ members = [
     "storescu",
     "toimage",
     "app-common",
+    "fuzz-repro",
 ]
 
 # use edition 2024 resolver
