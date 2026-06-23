@@ -110,13 +110,6 @@ fn main() {
         None
     };
 
-    if Some(app.move_destination.clone()) != Some(app.calling_ae_title.clone()) {
-        run_move_scu(app.clone(), progress).unwrap_or_else(|err| {
-            error!("{}", snafu::Report::from_error(err));
-            std::process::exit(-2);
-        });
-        return;
-    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
