@@ -170,7 +170,7 @@ where
                     value = Some(map.next_value()?);
                 }
                 "InlineBinary" => {
-                    if values.is_some() {
+                    if value.is_some() {
                         return Err(A::Error::custom(
                             "\"InlineBinary\" conflicts with \"Value\"",
                         ));
