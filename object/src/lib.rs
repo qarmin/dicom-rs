@@ -199,7 +199,7 @@ pub use crate::meta::{FileMetaTable, FileMetaTableBuilder};
 use dicom_core::ops::{AttributeSelector, AttributeSelectorStep};
 use dicom_core::value::{DicomValueType, ValueType};
 pub use dicom_core::Tag;
-use dicom_core::{DataDictionary, DicomValue, PrimitiveValue};
+use dicom_core::{DataDictionary, DicomValue, PrimitiveValue, VR};
 use dicom_dictionary_std::uids;
 pub use dicom_dictionary_std::StandardDataDictionary;
 
@@ -210,7 +210,8 @@ use dicom_core::header::{GroupNumber, HasLength};
 use dicom_encoding::adapters::{PixelDataObject, RawPixelData};
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
 use dicom_encoding::Codec;
-use dicom_parser::dataset::{DataSetWriter, IntoTokens};
+use dicom_encoding::text::SpecificCharacterSet;
+use dicom_parser::dataset::{DataSetWriter, DataToken, IntoTokens};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use itertools::Either;
 use meta::FileMetaAttribute;
@@ -948,6 +949,57 @@ impl<O> FileDicomObject<O> {
     }
 }
 
+/// Scan a token stream for the top-level (0008,0005) Specific Character Set
+/// element and return the corresponding charset, falling back to the default.
+///
+/// Called before writing a dataset to pre-prime the encoder: if a sequence
+/// element with tag group < 0x0008 exists in the dataset (e.g. from an
+/// out-of-order file), it is written before (0008,0005) in ascending tag order,
+/// so the lazy codec-switch inside the encoder fires too late. Extracting the
+/// charset upfront ensures the encoder uses the right codec from the start.
+fn charset_from_tokens<'a, O>(obj: &'a O) -> SpecificCharacterSet
+where
+    &'a O: IntoTokens,
+{
+    use dicom_core::Tag;
+
+    let cs_tag = Tag(0x0008, 0x0005);
+    let mut depth: u32 = 0;
+    let mut last_was_cs = false;
+    for token in obj.into_tokens() {
+        match &token {
+            DataToken::SequenceStart { .. } | DataToken::ItemStart { .. } => {
+                depth += 1;
+                last_was_cs = false;
+            }
+            DataToken::SequenceEnd | DataToken::ItemEnd => {
+                depth = depth.saturating_sub(1);
+                last_was_cs = false;
+            }
+            DataToken::ElementHeader(h) if depth == 0 => {
+                // only trust (0008,0005) with a text VR;
+                // non-conformant files may store it with non-text VRs
+                let is_text_vr = matches!(
+                    h.vr(),
+                    VR::CS | VR::AE | VR::AS | VR::PN | VR::SH | VR::LO | VR::UC | VR::UI
+                );
+                last_was_cs = h.tag == cs_tag && is_text_vr;
+            }
+            DataToken::PrimitiveValue(pv) if last_was_cs => {
+                if let Some(name) = pv.strings().ok().and_then(|s| s.first().map(|x| x.to_string())) {
+                    if let Some(cs) = SpecificCharacterSet::from_code(&name) {
+                        return cs;
+                    }
+                }
+                break;
+            }
+            _ => {
+                last_was_cs = false;
+            }
+        }
+    }
+    SpecificCharacterSet::default()
+}
 impl<O> FileDicomObject<O>
 where
     for<'a> &'a O: IntoTokens,

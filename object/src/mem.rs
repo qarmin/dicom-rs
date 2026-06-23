@@ -1364,6 +1364,37 @@ where
         ));
     }
 
+    /// Return the character set declared by (0008,0005) in this object,
+    /// or the default character set if the element is absent or unrecognized.
+    ///
+    /// Used to pre-prime the text encoder before writing elements: if a sequence
+    /// element with tag group < 0x0008 appears in the dataset, it would be written
+    /// before (0008,0005) in ascending tag order, causing the lazy codec-switch
+    /// trigger to fire too late. Pre-computing the charset here avoids that.
+    pub fn infer_charset(&self) -> SpecificCharacterSet {
+        self.element(tags::SPECIFIC_CHARACTER_SET)
+            .ok()
+            .and_then(|e| {
+                // only trust (0008,0005) when it has a text VR;
+                // non-conformant files may store it with e.g. TM or DA,
+                // in which case the value should NOT drive codec selection
+                // (the decoder won't switch codec for those VRs either)
+                let vr = e.header().vr();
+                let is_text_vr = matches!(
+                    vr,
+                    VR::CS | VR::AE | VR::AS | VR::PN | VR::SH | VR::LO | VR::UC | VR::UI
+                );
+                if !is_text_vr {
+                    return None;
+                }
+                e.value()
+                    .strings()
+                    .ok()
+                    .and_then(|parts| parts.first().map(|s| s.to_string()))
+            })
+            .and_then(|name| SpecificCharacterSet::from_code(&name))
+            .unwrap_or_default()
+    }
     /// Get a DataElement by AttributeSelector
     ///
     /// If the element or other intermediate elements do not exist, the method will return an error.
