@@ -1474,15 +1474,12 @@ impl<'a> ClientAssociationOptions<'a> {
                         },
                         Err(err) => {
                             if let Ok(rustls::Error::InappropriateMessage{..}) = err.downcast::<rustls::Error>() {
-                                    error!("Received TLS response to non-TLS request!");
-                                    return super::TlsNotSupportedSnafu.fail()
+                                error!("Received TLS response to non-TLS request!");
+                                return super::TlsNotSupportedSnafu.fail()
                             }
-                            // if let rustls::Error::InappropriateMessage{..} = err {
-                            //     error!("Recieved TLS response to non-TLS request!");
-                            //     return super::TlsNotSupportedSnafu.fail()
-                            // }
-                            // Recieved a valid TLS message, means the server expects TLS
-                            return super::TlsNotSupportedSnafu.fail()
+                            // downcast failed or error is not InappropriateMessage -
+                            // not a TLS indication, propagate the original error
+                            return Err(e)
                         }
 
                     }
