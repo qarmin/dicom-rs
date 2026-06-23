@@ -13,7 +13,7 @@ use tokio::{io::AsyncWriteExt, sync::Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error, MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, check_presentation_contexts, into_ts, store_req_command
+    ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error, MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, WriteIOSnafu, check_presentation_contexts, into_ts, store_req_command
 };
 
 pub async fn send_file<T>(
@@ -103,8 +103,7 @@ where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static{
 
             {
                 let mut pdata = scu.send_pdata(pc_selected.id);
-                pdata.write_all(&object_data).await.unwrap();
-                //.whatever_context("Failed to send C-STORE-RQ P-Data")?;
+                pdata.write_all(&object_data).await.context(WriteIOSnafu)?;
             }
         }
 
