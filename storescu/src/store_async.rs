@@ -13,7 +13,7 @@ use tokio::{io::AsyncWriteExt, sync::Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error, MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, check_presentation_contexts, into_ts, store_req_command
+    ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error, MissingAttributeSnafu, PartialFailureSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, check_presentation_contexts, into_ts, store_req_command
 };
 
 pub async fn send_file<T>(
@@ -23,7 +23,8 @@ pub async fn send_file<T>(
     progress_bar: Option<&Arc<tokio::sync::Mutex<ProgressBar>>>,
     verbose: bool,
     fail_first: bool,
-) -> Result<AsyncClientAssociation<T>, Error> 
+    had_failure: &mut bool,
+) -> Result<AsyncClientAssociation<T>, Error>
 where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static{
     if let (Some(pc_selected), Some(ts_uid_selected)) = (file.pc_selected, file.ts_selected) {
         let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, message_id);
@@ -161,6 +162,7 @@ where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static{
                             "Could not store instance `{}`: operation cancelled",
                             storage_sop_instance_uid
                         );
+                        *had_failure = true;
                         if fail_first {
                             let _ = scu.abort().await;
                             std::process::exit(-2);
@@ -171,6 +173,7 @@ where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static{
                             "Failed to store instance `{}` (status code {:04X}H)",
                             storage_sop_instance_uid, status
                         );
+                        *had_failure = true;
                         if fail_first {
                             let _ = scu.abort().await;
                             std::process::exit(-2);
@@ -210,6 +213,7 @@ pub async fn inner<T>(
 ) -> Result<(), Error>
  where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static {
     let mut message_id = 1;
+    let mut had_failure = false;
     loop {
         let file = {
             let mut files = d_files.lock().await;
@@ -239,16 +243,20 @@ pub async fn inner<T>(
             }
             Err(e) => {
                 error!("{}", Report::from_error(e));
+                had_failure = true;
                 if fail_first {
                     let _ = scu.abort().await;
                     std::process::exit(-2);
                 }
             }
         }
-        scu = send_file(scu, file, message_id, pbx.as_ref(), verbose, fail_first).await?;
+        scu = send_file(scu, file, message_id, pbx.as_ref(), verbose, fail_first, &mut had_failure).await?;
         message_id += 1;
     }
     let _ = scu.release().await;
-    Ok(())
-
+    if had_failure {
+        PartialFailureSnafu.fail()
+    } else {
+        Ok(())
+    }
 }

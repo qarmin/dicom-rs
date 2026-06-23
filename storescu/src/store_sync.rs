@@ -14,7 +14,7 @@ use snafu::{OptionExt, Report, ResultExt};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error, MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, WriteIOSnafu, check_presentation_contexts, into_ts, store_req_command
+    ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error, MissingAttributeSnafu, PartialFailureSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, WriteIOSnafu, check_presentation_contexts, into_ts, store_req_command
 };
 
 pub fn send_file<T>(
@@ -24,7 +24,8 @@ pub fn send_file<T>(
     progress_bar: Option<&ProgressBar>,
     verbose: bool,
     fail_first: bool,
-) -> Result<ClientAssociation<T>, Error> 
+    had_failure: &mut bool,
+) -> Result<ClientAssociation<T>, Error>
 where T: std::io::Read + std::io::Write + CloseSocket{
     if let (Some(pc_selected), Some(ts_uid_selected)) = (file.pc_selected, file.ts_selected) {
         if let Some(pb) = &progress_bar {
@@ -164,6 +165,7 @@ where T: std::io::Read + std::io::Write + CloseSocket{
                             "Could not store instance `{}`: operation cancelled",
                             storage_sop_instance_uid
                         );
+                        *had_failure = true;
                         if fail_first {
                             let _ = scu.abort();
                             std::process::exit(-2);
@@ -174,6 +176,7 @@ where T: std::io::Read + std::io::Write + CloseSocket{
                             "Failed to store instance `{}` (status code {:04X}H)",
                             storage_sop_instance_uid, status
                         );
+                        *had_failure = true;
                         if fail_first {
                             let _ = scu.abort();
                             std::process::exit(-2);
@@ -212,6 +215,7 @@ pub fn inner<T>(
     ignore_sop_class: bool,
 ) -> Result<(), Error>
 where T: std::io::Read + std::io::Write + CloseSocket{
+    let mut had_failure = false;
     for (message_id, mut file) in (1..).zip(d_files) {
         // identify the right transfer syntax to use
         let r: Result<_, Error> =
@@ -230,6 +234,7 @@ where T: std::io::Read + std::io::Write + CloseSocket{
             }
             Err(e) => {
                 error!("{}", Report::from_error(e));
+                had_failure = true;
                 if fail_first {
                     let _ = scu.abort();
                     std::process::exit(-2);
@@ -243,11 +248,16 @@ where T: std::io::Read + std::io::Write + CloseSocket{
             pbx.as_ref(),
             verbose,
             fail_first,
+            &mut had_failure,
         )?;
     }
     scu.release().map_err(Box::from).context(ScuSnafu)?;
     if let Some(pb) = pbx {
         pb.finish_with_message("done")
     };
-    Ok(())
+    if had_failure {
+        PartialFailureSnafu.fail()
+    } else {
+        Ok(())
+    }
 }

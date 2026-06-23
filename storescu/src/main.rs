@@ -179,7 +179,10 @@ enum Error {
     #[snafu(display("TLS error: {}", source))]
     Tls {
         source: dicom_app_common::TlsError,
-    }
+    },
+
+    /// One or more instances failed to store (partial failure)
+    PartialFailure,
 }
 
 #[allow(clippy::too_many_arguments)]
