@@ -71,6 +71,13 @@ pub enum Error {
         bytes_read: u64,
         backtrace: Backtrace,
     },
+
+    /// Sequence item header encountered outside of any sequence context at {bytes_read:#x}
+    #[snafu(display("Unexpected sequence item at {} bytes", bytes_read))]
+    UnexpectedItem {
+        bytes_read: u64,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Unexpected undefined value length at {} bytes", bytes_read))]
     UndefinedLength {
         bytes_read: u64,
@@ -370,13 +377,20 @@ where
                             };
 
                             // entered a new item
+                            let pixel_data = match self.seq_delimiters.last() {
+                                Some(sd) => sd.pixel_data,
+                                None => {
+                                    self.hard_break = true;
+                                    return Some(
+                                        UnexpectedItemSnafu {
+                                            bytes_read: self.parser.position(),
+                                        }
+                                        .fail(),
+                                    );
+                                }
+                            };
                             self.in_sequence = false;
-                            self.push_sequence_token(
-                                SeqTokenType::Item,
-                                len,
-                                self.seq_delimiters.last()
-                                    .expect("item header should be read only inside an existing sequence")
-                                    .pixel_data);
+                            self.push_sequence_token(SeqTokenType::Item, len, pixel_data);
                             // items can be empty
                             if len == Length(0) {
                                 self.delimiter_check_pending = true;
@@ -529,9 +543,16 @@ where
                     tag: Tag(0xFFFE, 0xE00D),
                     ..
                 }) => {
+                    if self.seq_delimiters.pop().is_none() {
+                        self.hard_break = true;
+                        return Some(
+                            UnexpectedItemDelimiterSnafu {
+                                bytes_read: self.parser.position(),
+                            }
+                            .fail(),
+                        );
+                    }
                     self.in_sequence = true;
-                    // pop item delimiter
-                    self.seq_delimiters.pop();
                     // sequences can end after this token
                     self.delimiter_check_pending = true;
                     Some(Ok(LazyDataToken::ItemEnd))
