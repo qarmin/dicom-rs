@@ -22,7 +22,7 @@ use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use snafu::{ResultExt, ensure};
 
 use crate::association::{NegotiatedOptions, RequestorRoles};
-use crate::pdu::{LARGE_PDU_SIZE, MAXIMUM_PDU_SIZE, PresentationContextNegotiated};
+use crate::pdu::{LARGE_PDU_SIZE, MAXIMUM_PDU_SIZE, MINIMUM_PDU_SIZE, PresentationContextNegotiated};
 use crate::{
     IMPLEMENTATION_CLASS_UID, IMPLEMENTATION_VERSION_NAME,
     pdu::{
@@ -838,9 +838,7 @@ where
                                 // treat 0 as the largest we support
                                 MAXIMUM_PDU_SIZE
                             } else {
-                                // Don't accept more than MAXIMUM_PDU_SIZE
-                                // as max_pdu_length.
-                                len.min(MAXIMUM_PDU_SIZE)
+                                len.min(MAXIMUM_PDU_SIZE).max(MINIMUM_PDU_SIZE)
                             };
                         }
 

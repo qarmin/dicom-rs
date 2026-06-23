@@ -22,7 +22,7 @@ use crate::{
     },
     pdu::{
         AbortRQSource, AssociationAC, AssociationRQ, DEFAULT_MAX_PDU, LARGE_PDU_SIZE,
-        MAXIMUM_PDU_SIZE, PDU_HEADER_SIZE, Pdu, PresentationContextNegotiated,
+        MAXIMUM_PDU_SIZE, MINIMUM_PDU_SIZE, PDU_HEADER_SIZE, Pdu, PresentationContextNegotiated,
         PresentationContextProposed, PresentationContextResultReason, RequestorRoles, UserIdentity,
         UserIdentityType, UserVariableItem, write_pdu,
     },
@@ -862,7 +862,7 @@ impl<'a> ClientAssociationOptions<'a> {
                     // treat 0 as the largest we support
                     MAXIMUM_PDU_SIZE
                 } else {
-                    acceptor_max_pdu_length.min(MAXIMUM_PDU_SIZE)
+                    acceptor_max_pdu_length.min(MAXIMUM_PDU_SIZE).max(MINIMUM_PDU_SIZE)
                 };
 
                 let presentation_contexts: Vec<_> = presentation_contexts_scp
