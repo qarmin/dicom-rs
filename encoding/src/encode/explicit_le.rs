@@ -85,7 +85,7 @@ impl Encode for ExplicitVRLittleEndianEncoder {
     where
         W: Write,
     {
-        let mut buf = [0u8, 4];
+        let mut buf = [0u8; 4];
         LittleEndian::write_u16(&mut buf[..], tag.group());
         LittleEndian::write_u16(&mut buf[2..], tag.element());
         to.write_all(&buf).context(WriteTagSnafu)
@@ -651,6 +651,15 @@ mod tests {
         0xE0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0xFF, 0x0D, 0xE0, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xFF,
         0xDD, 0xE0, 0x00, 0x00, 0x00, 0x00,
     ];
+
+    #[test]
+    fn encode_tag_roundtrip() -> Result {
+        let enc = ExplicitVRLittleEndianEncoder::default();
+        let mut out = Vec::new();
+        enc.encode_tag(&mut out, Tag(0x0008, 0x0020))?;
+        assert_eq!(out, &[0x08, 0x00, 0x20, 0x00]);
+        Ok(())
+    }
 
     #[test]
     fn encode_items() -> Result {
