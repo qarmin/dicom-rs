@@ -113,7 +113,9 @@ fn run() -> Result<(), Whatever> {
 
     match pdu {
         Pdu::PData { data } => {
-            let data_value = &data[0];
+            let data_value = data
+                .first()
+                .whatever_context("Empty PData response from SCP")?;
             let v = &data_value.data;
 
             let obj = InMemDicomObject::read_dataset_with_ts(v.as_slice(), &ts)
