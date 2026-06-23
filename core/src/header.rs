@@ -264,7 +264,8 @@ impl<I, P> DataElement<I, P> {
         match &mut self.value {
             Value::Primitive(v) => {
                 let byte_len = v.calculate_byte_len();
-                self.header.len = Length(byte_len as u32);
+                // cap at max defined length (0xFFFF_FFFE); 0xFFFF_FFFF is UNDEFINED
+                self.header.len = Length(byte_len.min(u32::MAX as usize - 1) as u32);
             }
             Value::Sequence(_) => {
                 self.header.vr = VR::SQ;
@@ -1223,11 +1224,8 @@ impl std::ops::Add<Length> for Length {
         match (self.0, rhs.0) {
             (UNDEFINED_LEN, _) | (_, UNDEFINED_LEN) => Length::UNDEFINED,
             (l1, l2) => {
-                let o = l1 + l2;
-                debug_assert!(
-                    o != UNDEFINED_LEN,
-                    "integer overflow (0xFFFF_FFFF reserved for undefined length)"
-                );
+                // use u64 to avoid wrapping to UNDEFINED_LEN (0xFFFF_FFFF)
+                let o = (l1 as u64 + l2 as u64).min(UNDEFINED_LEN as u64 - 1) as u32;
                 Length(o)
             }
         }
@@ -1293,11 +1291,9 @@ impl std::ops::SubAssign<i32> for Length {
         match self.0 {
             UNDEFINED_LEN => (), // no-op
             len => {
-                self.0 = (len as i32 - rhs) as u32;
-                debug_assert!(
-                    self.0 != UNDEFINED_LEN,
-                    "integer overflow (0xFFFF_FFFF reserved for undefined length)"
-                );
+                // use i64 to avoid silent wrapping to UNDEFINED_LEN (0xFFFF_FFFF)
+                let o = (len as i64 - rhs as i64).clamp(0, UNDEFINED_LEN as i64 - 1) as u32;
+                self.0 = o;
             }
         }
     }
