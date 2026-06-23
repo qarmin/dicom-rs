@@ -548,12 +548,13 @@ impl DecodedPixelData<'_> {
     /// irrespective of the expected size of each sample.
     pub fn frame_data(&self, frame: u32) -> Result<&[u8]> {
         let bytes_per_sample = self.bits_allocated.div_ceil(8) as usize;
-        let frame_length = self.rows as usize
-            * self.cols as usize
-            * self.samples_per_pixel as usize
-            * bytes_per_sample;
-        let frame_start = frame_length * frame as usize;
-        let frame_end = frame_start + frame_length;
+        let frame_length = (self.rows as usize)
+            .checked_mul(self.cols as usize)
+            .and_then(|n| n.checked_mul(self.samples_per_pixel as usize))
+            .and_then(|n| n.checked_mul(bytes_per_sample))
+            .unwrap_or(usize::MAX);
+        let frame_start = frame_length.saturating_mul(frame as usize);
+        let frame_end = frame_start.saturating_add(frame_length);
         if frame_end > (*self.data).len() {
             FrameOutOfRangeSnafu {
                 frame_number: frame,
@@ -1148,12 +1149,13 @@ impl DecodedPixelData<'_> {
                     // convert to image only after shifting values
                     // to an unsigned scale
                     ModalityLutOption::None => {
-                        let frame_length = self.rows as usize
-                            * self.cols as usize
-                            * 2
-                            * self.samples_per_pixel as usize;
-                        let frame_start = frame_length * frame as usize;
-                        let frame_end = frame_start + frame_length;
+                        let frame_length = (self.rows as usize)
+                            .checked_mul(self.cols as usize)
+                            .and_then(|n| n.checked_mul(2))
+                            .and_then(|n| n.checked_mul(self.samples_per_pixel as usize))
+                            .unwrap_or(usize::MAX);
+                        let frame_start = frame_length.saturating_mul(frame as usize);
+                        let frame_end = frame_start.saturating_add(frame_length);
                         if frame_end > (*self.data).len() {
                             FrameOutOfRangeSnafu {
                                 frame_number: frame,
@@ -2080,18 +2082,34 @@ pub trait PixelDecoder {
     fn decode_pixel_data_frame(&self, frame: u32) -> Result<DecodedPixelData<'_>> {
         let mut px = self.decode_pixel_data()?;
 
-        // calculate frame offset and size
-        let frame_size = px.bits_allocated.div_ceil(8) as usize
-            * px.samples_per_pixel as usize
-            * px.rows as usize
-            * px.cols as usize;
-        let frame_offset = frame_size * frame as usize;
+        // calculate frame offset and size (use checked arithmetic to avoid overflow)
+        let frame_size = (px.bits_allocated.div_ceil(8) as usize)
+            .checked_mul(px.samples_per_pixel as usize)
+            .and_then(|n| n.checked_mul(px.rows as usize))
+            .and_then(|n| n.checked_mul(px.cols as usize))
+            .unwrap_or(usize::MAX);
+        let frame_offset = frame_size.saturating_mul(frame as usize);
+        let frame_end = frame_offset.saturating_add(frame_size);
 
         // crop to frame
         match &mut px.data {
-            Cow::Owned(data) => *data = data[frame_offset..frame_offset + frame_size].to_vec(),
+            Cow::Owned(data) => {
+                if frame_end > data.len() {
+                    FrameOutOfRangeSnafu {
+                        frame_number: frame,
+                    }
+                    .fail()?;
+                }
+                *data = data[frame_offset..frame_end].to_vec();
+            }
             Cow::Borrowed(data) => {
-                *data = &data[frame_offset..frame_offset + frame_size];
+                if frame_end > data.len() {
+                    FrameOutOfRangeSnafu {
+                        frame_number: frame,
+                    }
+                    .fail()?;
+                }
+                *data = &data[frame_offset..frame_end];
             }
         }
 
@@ -2302,10 +2320,16 @@ where
 
                 if bits_allocated == 1 {
                     // Expand 1-bit samples to 0/255 bytes for all frames
-                    let frame_pixels = (rows as usize) * (cols as usize);
-                    let frame_samples = frame_pixels * (samples_per_pixel as usize);
+                    let frame_pixels = (rows as usize)
+                        .checked_mul(cols as usize)
+                        .unwrap_or(usize::MAX);
+                    let frame_samples = frame_pixels
+                        .saturating_mul(samples_per_pixel as usize);
                     let frame_size = frame_samples / 8;
-                    let frame_size_all = frame_size * (number_of_frames as usize);
+                    let frame_size_all = frame_size
+                        .saturating_mul(number_of_frames as usize);
+                    let take_count = frame_pixels
+                        .saturating_mul(number_of_frames as usize);
 
                     let frame_data = data.get(0..frame_size_all).context(FrameOutOfRangeSnafu {
                         frame_number: frame_size_all as u32,
@@ -2314,7 +2338,7 @@ where
                     frame_data
                         .iter()
                         .flat_map(|&byte| (0..8).map(move |bit| ((byte >> bit) & 1) * 255))
-                        .take(frame_pixels * number_of_frames as usize)
+                        .take(take_count)
                         .collect()
                 } else {
                     data.to_vec()
@@ -2454,18 +2478,23 @@ where
             }
             DicomValue::Primitive(p) => {
                 // Non-encoded, just return the pixel data for a single frame
-                let frame_pixels = (rows as usize) * (cols as usize);
-                let frame_samples = frame_pixels * (samples_per_pixel as usize);
+                let frame_pixels = (rows as usize)
+                    .checked_mul(cols as usize)
+                    .unwrap_or(usize::MAX);
+                let frame_samples = frame_pixels
+                    .saturating_mul(samples_per_pixel as usize);
                 let frame_size = if bits_allocated == 1 {
                     frame_samples / 8
                 } else {
-                    frame_samples * (bits_allocated.div_ceil(8) as usize)
+                    frame_samples
+                        .saturating_mul(bits_allocated.div_ceil(8) as usize)
                 };
-                let frame_offset = frame_size * (frame as usize);
+                let frame_offset = frame_size.saturating_mul(frame as usize);
+                let frame_end = frame_offset.saturating_add(frame_size);
 
                 let data = p.to_bytes();
 
-                let frame_data = data.get(frame_offset..frame_offset + frame_size).context(
+                let frame_data = data.get(frame_offset..frame_end).context(
                     FrameOutOfRangeSnafu {
                         frame_number: frame,
                     },
