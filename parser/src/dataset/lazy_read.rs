@@ -529,9 +529,17 @@ where
                     tag: Tag(0xFFFE, 0xE00D),
                     ..
                 }) => {
-                    self.in_sequence = true;
+                    if self.seq_delimiters.is_empty() {
+                        // stray item-end outside any sequence: log and skip (matches read.rs)
+                        tracing::warn!(
+                            "Item delimitation item outside of a sequence at position {}",
+                            self.parser.position()
+                        );
+                        return self.advance();
+                    }
                     // pop item delimiter
                     self.seq_delimiters.pop();
+                    self.in_sequence = true;
                     // sequences can end after this token
                     self.delimiter_check_pending = true;
                     Some(Ok(LazyDataToken::ItemEnd))
