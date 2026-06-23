@@ -222,7 +222,9 @@ where
 
                                 let obj = InMemDicomObject::read_dataset_with_ts(
                                     instance_buffer.as_slice(),
-                                    TransferSyntaxRegistry.get(ts).unwrap(),
+                                    TransferSyntaxRegistry
+                                        .get(ts)
+                                        .whatever_context("unknown transfer syntax")?,
                                 )
                                 .whatever_context("failed to read DICOM data object")?;
                                 let file_meta = FileMetaTableBuilder::new()
@@ -246,10 +248,13 @@ where
                                 let file_obj = obj.with_exact_meta(file_meta);
 
                                 // write the files to the current directory with their SOPInstanceUID as filenames
+                                let safe_uid: String = sop_instance_uid
+                                    .trim_end_matches('\0')
+                                    .chars()
+                                    .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-')
+                                    .collect();
                                 let mut file_path = out_dir.to_path_buf();
-                                file_path.push(
-                                    sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm",
-                                );
+                                file_path.push(safe_uid + ".dcm");
                                 file_obj
                                     .write_to_file(&file_path)
                                     .whatever_context("could not save DICOM object to file")?;
