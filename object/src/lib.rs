@@ -208,9 +208,10 @@ pub type DefaultDicomObject<D = StandardDataDictionary> = FileDicomObject<mem::I
 
 use dicom_core::header::{GroupNumber, HasLength};
 use dicom_encoding::adapters::{PixelDataObject, RawPixelData};
+use dicom_encoding::text::SpecificCharacterSet;
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
 use dicom_encoding::Codec;
-use dicom_parser::dataset::{DataSetWriter, IntoTokens};
+use dicom_parser::dataset::{DataSetWriter, DataToken, IntoTokens};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use itertools::Either;
 use meta::FileMetaAttribute;
@@ -948,6 +949,53 @@ impl<O> FileDicomObject<O> {
     }
 }
 
+/// Scan a token stream for the top-level (0008,0005) Specific Character Set
+/// element and return the corresponding charset, falling back to the default.
+///
+/// Called before writing a dataset to pre-prime the encoder: if a sequence
+/// element with tag group < 0x0008 exists in the dataset (e.g. from an
+/// out-of-order file), it is written before (0008,0005) in ascending tag order,
+/// so the lazy codec-switch inside the encoder fires too late. Extracting the
+/// charset upfront ensures the encoder uses the right codec from the start.
+fn charset_from_tokens<'a, O>(obj: &'a O) -> SpecificCharacterSet
+where
+    &'a O: IntoTokens,
+{
+    use dicom_core::Tag;
+    use dicom_encoding::text::SpecificCharacterSet;
+
+    let cs_tag = Tag(0x0008, 0x0005);
+    let mut depth: u32 = 0;
+    let mut last_was_cs = false;
+    for token in obj.into_tokens() {
+        match &token {
+            DataToken::SequenceStart { .. } | DataToken::ItemStart { .. } => {
+                depth += 1;
+                last_was_cs = false;
+            }
+            DataToken::SequenceEnd | DataToken::ItemEnd => {
+                depth = depth.saturating_sub(1);
+                last_was_cs = false;
+            }
+            DataToken::ElementHeader(h) if depth == 0 => {
+                last_was_cs = h.tag == cs_tag;
+            }
+            DataToken::PrimitiveValue(pv) if last_was_cs => {
+                if let Some(name) = pv.strings().ok().and_then(|s| s.first().map(|x| x.to_string())) {
+                    if let Some(cs) = SpecificCharacterSet::from_code(&name) {
+                        return cs;
+                    }
+                }
+                break;
+            }
+            _ => {
+                last_was_cs = false;
+            }
+        }
+    }
+    SpecificCharacterSet::default()
+}
+
 impl<O> FileDicomObject<O>
 where
     for<'a> &'a O: IntoTokens,
@@ -1026,11 +1074,12 @@ where
             }
             .fail();
         };
+        let cs = charset_from_tokens(&self.obj);
         match ts.codec() {
             Codec::Dataset(Some(adapter)) => {
                 let adapter = adapter.adapt_writer(Box::new(to));
                 let mut dset_writer =
-                    DataSetWriter::with_ts(adapter, ts).context(CreatePrinterSnafu)?;
+                    DataSetWriter::with_ts_cs(adapter, ts, cs).context(CreatePrinterSnafu)?;
 
                 // write object
                 dset_writer
@@ -1062,7 +1111,8 @@ where
             }
             Codec::None | Codec::EncapsulatedPixelData(..) => {
                 // no dataset adapter needed
-                let mut dset_writer = DataSetWriter::with_ts(to, ts).context(CreatePrinterSnafu)?;
+                let mut dset_writer =
+                    DataSetWriter::with_ts_cs(to, ts, cs).context(CreatePrinterSnafu)?;
 
                 // write object
                 dset_writer

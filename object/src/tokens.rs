@@ -1,8 +1,10 @@
 //! Conversion of DICOM objects into tokens.
-use crate::mem::InMemDicomObject;
-use dicom_core::DataElement;
+use crate::mem::{InMemDicomObject, InMemElement};
+use dicom_core::{dictionary::DataDictionary, DataElement, Tag};
 use dicom_parser::dataset::{DataToken, IntoTokens, IntoTokensOptions};
 use std::collections::VecDeque;
+
+const SPECIFIC_CHARACTER_SET: Tag = Tag(0x0008, 0x0005);
 
 /// A stream of tokens from a DICOM object.
 pub struct InMemObjectTokens<E> {
@@ -101,10 +103,9 @@ impl<D> IntoTokens for InMemDicomObject<D> {
 
 impl<'a, D> IntoTokens for &'a InMemDicomObject<D>
 where
-    D: Clone,
+    D: DataDictionary + Clone + 'a,
 {
-    type Iter =
-        InMemObjectTokens<std::iter::Cloned<<&'a InMemDicomObject<D> as IntoIterator>::IntoIter>>;
+    type Iter = Box<dyn Iterator<Item = DataToken> + 'a>;
 
     fn into_tokens(self) -> Self::Iter {
         self.into_tokens_with_options(Default::default())
@@ -113,6 +114,39 @@ where
     fn into_tokens_with_options(self, mut options: IntoTokensOptions) -> Self::Iter {
         options.force_invalidate_sq_length |= self.charset_changed;
 
-        InMemObjectTokens::new_with_options(self.into_iter().cloned(), options)
+        // When an element with a smaller tag than (0008,0005) exists (e.g. a
+        // group-0x0000 sequence, which is non-conformant but accepted by the
+        // lenient parser), emit (0008,0005) first so the written file declares
+        // the charset before those items. Without this the decoder for the
+        // re-read file encounters the sequence before learning the charset and
+        // uses the wrong codec for any text inside.
+        let needs_reorder = self.element(SPECIFIC_CHARACTER_SET).is_ok()
+            && self
+                .iter()
+                .next()
+                .map(|e| e.header().tag < SPECIFIC_CHARACTER_SET)
+                .unwrap_or(false);
+
+        if needs_reorder {
+            let cs_elem: InMemElement<D> =
+                self.element(SPECIFIC_CHARACTER_SET).unwrap().clone();
+            let cs_tokens: Vec<DataToken> =
+                cs_elem.into_tokens_with_options(options).collect();
+            let rest: Vec<InMemElement<D>> = self
+                .into_iter()
+                .filter(|e| e.header().tag != SPECIFIC_CHARACTER_SET)
+                .cloned()
+                .collect();
+            Box::new(
+                cs_tokens
+                    .into_iter()
+                    .chain(InMemObjectTokens::new_with_options(rest, options)),
+            )
+        } else {
+            Box::new(InMemObjectTokens::new_with_options(
+                self.into_iter().cloned(),
+                options,
+            ))
+        }
     }
 }

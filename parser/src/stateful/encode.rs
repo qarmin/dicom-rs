@@ -294,7 +294,14 @@ where
 
         // if element is Specific Character Set,
         // update the text codec
-        if de.tag == Tag(0x0008, 0x0005) {
+        //
+        // Gated on `de.vr == VR::CS` to mirror the read side
+        // (`read_value_cs` only triggers when the VR was actually decoded
+        // as CS): a malformed file that declares this tag with a different
+        // VR never switches the codec on read, so switching it here
+        // unconditionally would desync the codec used to re-encode
+        // subsequent elements from the one used to decode them.
+        if de.tag == Tag(0x0008, 0x0005) && de.vr == VR::CS {
             self.try_new_codec(text);
         }
 
@@ -334,8 +341,9 @@ where
         self.bytes_written += self.buffer.len() as u64;
 
         // if element is Specific Character Set,
-        // update the text codec
-        if de.tag == Tag(0x0008, 0x0005) {
+        // update the text codec (see comment in `encode_text_element`
+        // for why this is gated on `de.vr == VR::CS`)
+        if de.tag == Tag(0x0008, 0x0005) && de.vr == VR::CS {
             if let Some(charset_name) = texts.first() {
                 self.try_new_codec(charset_name.as_ref());
             }
@@ -346,7 +354,8 @@ where
 
     fn convert_text_untrailed(&self, text: &str, vr: VR) -> Result<Vec<u8>> {
         match vr {
-            VR::AE | VR::AS | VR::CS | VR::DA | VR::DS | VR::DT | VR::IS | VR::TM | VR::UI => {
+            VR::AE | VR::AS | VR::CS | VR::DA | VR::DS | VR::DT | VR::IS | VR::TM | VR::UI
+            | VR::UR => {
                 // these VRs always use the default character repertoire
                 DefaultCharacterSetCodec
                     .encode(text)

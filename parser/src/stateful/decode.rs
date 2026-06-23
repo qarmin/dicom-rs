@@ -129,6 +129,21 @@ pub enum Error {
         string: String,
         backtrace: Backtrace,
     },
+
+    #[snafu(display(
+        "Value length {} of element tagged {} at position {} is not a multiple of {}",
+        len,
+        tag,
+        position,
+        multiple_of
+    ))]
+    InvalidValueLength {
+        tag: Tag,
+        position: u64,
+        len: usize,
+        multiple_of: usize,
+        backtrace: Backtrace,
+    },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -235,6 +250,30 @@ pub enum CharacterSetOverride {
     ///
     /// DA, TM, DT, IS, DS, and FD will not be affected by this change.
     AnyVr,
+}
+
+/// Whether a value of the given VR should be decoded with the currently
+/// declared Specific Character Set, as opposed to the default character
+/// repertoire.
+///
+/// Per DICOM PS3.5 6.1.2.3, only LO, LT, PN, SH, ST, UC and UT are affected
+/// by Specific Character Set; DA, TM, DT, IS and DS are never affected,
+/// regardless of `charset_override`. Encoding (`StatefulEncoder`) follows
+/// the same rule, so getting this wrong here breaks the write+reread
+/// round trip for any text VR incorrectly treated as charset-dependent.
+fn vr_uses_declared_charset(vr: VR, charset_override: CharacterSetOverride) -> bool {
+    if matches!(vr, VR::DA | VR::TM | VR::DT | VR::IS | VR::DS) {
+        return false;
+    }
+    match charset_override {
+        CharacterSetOverride::AnyVr => true,
+        CharacterSetOverride::None => {
+            matches!(
+                vr,
+                VR::LO | VR::LT | VR::PN | VR::SH | VR::ST | VR::UC | VR::UT
+            )
+        }
+    }
 }
 
 /// A stateful abstraction for the full DICOM content reading process.
@@ -433,15 +472,74 @@ where
             })
     }
 
-    fn read_value_tag(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
+    /// Like `require_known_length`, but also checks that the length is a
+    /// multiple of `elem_size` (the binary width of one value for a
+    /// fixed-width VR), returning the element count.
+    ///
+    /// A length that isn't a multiple of the element size cannot be
+    /// rejected by simply rounding it down: doing so previously let a
+    /// value such as a 4-byte length on an 8-byte-per-element VR decode
+    /// to a typed empty value (e.g. `F64([])`) while silently discarding
+    /// the leftover bytes, which differs from how a *declared* empty
+    /// value (length 0) decodes (`PrimitiveValue::Empty`) and therefore
+    /// could not be round-tripped through a write followed by a read.
+    fn require_known_length_multiple_of(
+        &self,
+        header: &DataElementHeader,
+        elem_size: usize,
+    ) -> Result<usize> {
         let len = self.require_known_length(header)?;
+        if len % elem_size != 0 {
+            return InvalidValueLengthSnafu {
+                tag: header.tag,
+                position: self.position,
+                len,
+                multiple_of: elem_size,
+            }
+            .fail();
+        }
+        Ok(len / elem_size)
+    }
 
+    /// Fills `self.buffer` with exactly `len` bytes read from the source.
+    ///
+    /// Unlike resizing the buffer to `len` up front, this grows it
+    /// incrementally as bytes are actually obtained from the source,
+    /// so that a bogus or truncated declared length
+    /// (e.g. from a malformed or malicious file)
+    /// cannot be used to make the parser attempt
+    /// a single enormous allocation ahead of reading anything.
+    fn fill_buffer(&mut self, len: usize) -> Result<()> {
+        self.buffer.clear();
+        self.from
+            .by_ref()
+            .take(len as u64)
+            .read_to_end(&mut self.buffer)
+            .context(ReadValueDataSnafu {
+                position: self.position,
+            })?;
+        if self.buffer.len() != len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer",
+            ))
+            .context(ReadValueDataSnafu {
+                position: self.position,
+            });
+        }
+        Ok(())
+    }
+
+    fn read_value_tag(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
         // tags
-        let ntags = len >> 2;
+        let ntags = self.require_known_length_multiple_of(header, 4)?;
+        let len = ntags * 4;
+        self.fill_buffer(len)?;
+        let mut cursor = &self.buffer[..];
         let parts: Result<_> = n_times(ntags)
             .map(|_| {
                 self.basic
-                    .decode_tag(&mut self.from)
+                    .decode_tag(&mut cursor)
                     .context(ReadValueDataSnafu {
                         position: self.position,
                     })
@@ -457,10 +555,8 @@ where
         let len = self.require_known_length(header)?;
 
         // sequence of 8-bit integers (or arbitrary byte data)
-        let mut buf = smallvec![0u8; len];
-        self.from.read_exact(&mut buf).context(ReadValueDataSnafu {
-            position: self.position,
-        })?;
+        self.fill_buffer(len)?;
+        let buf = self.buffer.as_slice().into();
         self.position += len as u64;
         Ok(PrimitiveValue::U8(buf))
     }
@@ -468,18 +564,9 @@ where
     fn read_value_strs(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
         let len = self.require_known_length(header)?;
         // sequence of strings
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
 
-        let use_charset_declared = match (self.charset_override, header.vr()) {
-            (CharacterSetOverride::AnyVr, _) => true,
-            (_, VR::AE) | (_, VR::CS) | (_, VR::AS) | (_, VR::UR) => false,
-            _ => true,
-        };
+        let use_charset_declared = vr_uses_declared_charset(header.vr(), self.charset_override);
 
         let parts: Result<_> = if use_charset_declared {
             self.buffer
@@ -511,30 +598,29 @@ where
         let len = self.require_known_length(header)?;
 
         // a single string
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
         self.position += len as u64;
-        Ok(PrimitiveValue::Str(
-            self.text
-                .decode(&self.buffer[..])
-                .context(DecodeTextSnafu {
-                    position: self.position,
-                })?,
-        ))
+
+        let use_charset_declared = vr_uses_declared_charset(header.vr(), self.charset_override);
+        let text = if use_charset_declared {
+            self.text.decode(&self.buffer[..])
+        } else {
+            DefaultCharacterSetCodec.decode(&self.buffer[..])
+        }
+        .context(DecodeTextSnafu {
+            position: self.position,
+        })?;
+        Ok(PrimitiveValue::Str(text))
     }
 
     fn read_value_ss(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
         // sequence of 16-bit signed integers
-        let len = self.require_known_length(header)?;
-
-        let n = len >> 1;
+        let n = self.require_known_length_multiple_of(header, 2)?;
+        let len = n * 2;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0; n];
         self.basic
-            .decode_ss_into(&mut self.from, &mut vec[..])
+            .decode_ss_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -544,12 +630,13 @@ where
     }
 
     fn read_value_fl(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 32-bit floats
-        let n = len >> 2;
+        let n = self.require_known_length_multiple_of(header, 4)?;
+        let len = n * 4;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0.; n];
         self.basic
-            .decode_fl_into(&mut self.from, &mut vec[..])
+            .decode_fl_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -561,12 +648,7 @@ where
         let len = self.require_known_length(header)?;
         // sequence of dates
 
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
         let buf = trim_trail_empty_bytes(&self.buffer);
         if buf.is_empty() {
             return Ok(PrimitiveValue::Empty);
@@ -600,12 +682,7 @@ where
         let len = self.require_known_length(header)?;
         // sequence of doubles in text form
 
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
         let buf = trim_trail_empty_bytes(&self.buffer);
         if buf.is_empty() {
             return Ok(PrimitiveValue::Empty);
@@ -632,12 +709,7 @@ where
         let len = self.require_known_length(header)?;
         // sequence of datetimes
 
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
         let buf = trim_trail_empty_bytes(&self.buffer);
         if buf.is_empty() {
             return Ok(PrimitiveValue::Empty);
@@ -669,12 +741,7 @@ where
     fn read_value_is(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
         let len = self.require_known_length(header)?;
         // sequence of signed integers in text form
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
         let buf = trim_trail_empty_bytes(&self.buffer);
         if buf.is_empty() {
             return Ok(PrimitiveValue::Empty);
@@ -701,12 +768,7 @@ where
         let len = self.require_known_length(header)?;
         // sequence of time instances
 
-        self.buffer.resize_with(len, Default::default);
-        self.from
-            .read_exact(&mut self.buffer)
-            .context(ReadValueDataSnafu {
-                position: self.position,
-            })?;
+        self.fill_buffer(len)?;
         let buf = trim_trail_empty_bytes(&self.buffer);
         if buf.is_empty() {
             return Ok(PrimitiveValue::Empty);
@@ -737,12 +799,13 @@ where
     }
 
     fn read_value_od(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 64-bit floats
-        let n = len >> 3;
+        let n = self.require_known_length_multiple_of(header, 8)?;
+        let len = n * 8;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0.; n];
         self.basic
-            .decode_fd_into(&mut self.from, &mut vec[..])
+            .decode_fd_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -751,13 +814,13 @@ where
     }
 
     fn read_value_ul(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 32-bit unsigned integers
-
-        let n = len >> 2;
+        let n = self.require_known_length_multiple_of(header, 4)?;
+        let len = n * 4;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0u32; n];
         self.basic
-            .decode_ul_into(&mut self.from, &mut vec[..])
+            .decode_ul_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -766,11 +829,12 @@ where
     }
 
     fn read_u32(&mut self, n: usize, vec: &mut Vec<u32>) -> Result<()> {
+        self.fill_buffer(n * 4)?;
         let base = vec.len();
         vec.resize(base + n, 0);
 
         self.basic
-            .decode_ul_into(&mut self.from, &mut vec[base..])
+            .decode_ul_into(&self.buffer[..], &mut vec[base..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -779,13 +843,13 @@ where
     }
 
     fn read_value_us(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 16-bit unsigned integers
-
-        let n = len >> 1;
+        let n = self.require_known_length_multiple_of(header, 2)?;
+        let len = n * 2;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0; n];
         self.basic
-            .decode_us_into(&mut self.from, &mut vec[..])
+            .decode_us_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -801,13 +865,13 @@ where
     }
 
     fn read_value_uv(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 64-bit unsigned integers
-
-        let n = len >> 3;
+        let n = self.require_known_length_multiple_of(header, 8)?;
+        let len = n * 8;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0; n];
         self.basic
-            .decode_uv_into(&mut self.from, &mut vec[..])
+            .decode_uv_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -816,13 +880,13 @@ where
     }
 
     fn read_value_sl(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 32-bit signed integers
-
-        let n = len >> 2;
+        let n = self.require_known_length_multiple_of(header, 4)?;
+        let len = n * 4;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0; n];
         self.basic
-            .decode_sl_into(&mut self.from, &mut vec[..])
+            .decode_sl_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -831,13 +895,13 @@ where
     }
 
     fn read_value_sv(&mut self, header: &DataElementHeader) -> Result<PrimitiveValue> {
-        let len = self.require_known_length(header)?;
         // sequence of 64-bit signed integers
-
-        let n = len >> 3;
+        let n = self.require_known_length_multiple_of(header, 8)?;
+        let len = n * 8;
+        self.fill_buffer(len)?;
         let mut vec = smallvec![0; n];
         self.basic
-            .decode_sv_into(&mut self.from, &mut vec[..])
+            .decode_sv_into(&self.buffer[..], &mut vec[..])
             .context(ReadValueDataSnafu {
                 position: self.position,
             })?;
@@ -1000,6 +1064,14 @@ where
                 .fail()
             }
             VR::AT => self.read_value_tag(header),
+            // Route any text VR for (0008,0005) through read_value_cs so that
+            // non-conformant files that store SpecificCharacterSet with VR=SH
+            // (instead of CS) still trigger the charset switch.
+            VR::AE | VR::AS | VR::PN | VR::SH | VR::LO | VR::UC | VR::UI
+                if header.tag == Tag(0x0008, 0x0005) =>
+            {
+                self.read_value_cs(header)
+            }
             VR::AE | VR::AS | VR::PN | VR::SH | VR::LO | VR::UC | VR::UI => {
                 self.read_value_strs(header)
             }
@@ -1036,6 +1108,14 @@ where
                 .fail()
             }
             VR::AT => self.read_value_tag(header),
+            // Non-conformant files may store (0008,0005) with VR=SH or other
+            // text VRs instead of CS. Route them through read_value_cs so the
+            // charset still gets updated.
+            VR::AE | VR::AS | VR::PN | VR::SH | VR::LO | VR::UC | VR::UI
+                if header.tag == Tag(0x0008, 0x0005) =>
+            {
+                self.read_value_cs(header)
+            }
             VR::AE
             | VR::AS
             | VR::PN

@@ -1364,6 +1364,26 @@ where
         ));
     }
 
+    /// Return the character set declared by (0008,0005) in this object,
+    /// or the default character set if the element is absent or unrecognized.
+    ///
+    /// Used to pre-prime the text encoder before writing elements: if a sequence
+    /// element with tag group < 0x0008 appears in the dataset, it would be written
+    /// before (0008,0005) in ascending tag order, causing the lazy codec-switch
+    /// trigger to fire too late. Pre-computing the charset here avoids that.
+    pub fn infer_charset(&self) -> SpecificCharacterSet {
+        self.element(tags::SPECIFIC_CHARACTER_SET)
+            .ok()
+            .and_then(|e| {
+                e.value()
+                    .strings()
+                    .ok()
+                    .and_then(|parts| parts.first().map(|s| s.to_string()))
+            })
+            .and_then(|name| SpecificCharacterSet::from_code(&name))
+            .unwrap_or_default()
+    }
+
     /// Get a DataElement by AttributeSelector
     ///
     /// If the element or other intermediate elements do not exist, the method will return an error.
@@ -2039,7 +2059,7 @@ where
     where
         W: Write,
     {
-        self.write_dataset_with_ts_cs(to, ts, SpecificCharacterSet::default())
+        self.write_dataset_with_ts_cs(to, ts, self.infer_charset())
     }
 
     /// Write this object's data set into the given writer,
@@ -2058,7 +2078,7 @@ where
     where
         W: Write,
     {
-        self.write_dataset_with_ts_cs_options(to, ts, SpecificCharacterSet::default(), options)
+        self.write_dataset_with_ts_cs_options(to, ts, self.infer_charset(), options)
     }
 
     /// Encapsulate this object to contain a file meta group
