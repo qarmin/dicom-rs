@@ -831,9 +831,11 @@ fn read_pdu_variable(mut buf: impl Buf, codec: &dyn TextCodec) -> Result<Option<
                             return Ok(None);
                         }
 
-                        // check item length against SOP class UID length
+                        // check item length against SOP class UID length,
+                        // using checked arithmetic to avoid overflow when
+                        // sop_class_uid_length is close to u16::MAX
                         ensure!(
-                            item_length >= 2 + sop_class_uid_length,
+                            item_length.checked_sub(2).map_or(false, |r| r >= sop_class_uid_length),
                             ShortSopClassExtendedNegotiationItemLengthSnafu {
                                 length: item_length,
                                 sop_class_uid_length,
