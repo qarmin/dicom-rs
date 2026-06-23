@@ -50,14 +50,6 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    /// The parser could not allocate memory for the
-    /// given length of a data element.
-    #[snafu(display("Could not allocate memory"))]
-    AllocationSize {
-        backtrace: Backtrace,
-        source: std::collections::TryReserveError,
-    },
-
     /// The file meta group parser could not decode
     /// the text in one of its data elements.
     #[snafu(display("Could not decode text in {}", name))]
@@ -219,16 +211,32 @@ fn bytes_eq_without_trailing_byte(v1: &[u8], v2: &[u8]) -> bool {
 }
 
 /// Utility function for reading the body of the DICOM element as a UID.
+/// Reads exactly `len` bytes from `source`, growing the buffer
+/// incrementally as bytes actually arrive rather than pre-allocating
+/// `len` bytes upfront. This keeps a small file with a bogus, huge
+/// declared element length from triggering a multi-gigabyte allocation
+/// before the read has any chance to fail.
+fn read_exact_bytes<S>(source: &mut S, len: u32) -> std::io::Result<Vec<u8>>
+where
+    S: Read,
+{
+    let mut v = Vec::new();
+    source.by_ref().take(len as u64).read_to_end(&mut v)?;
+    if v.len() != len as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "failed to fill whole buffer",
+        ));
+    }
+    Ok(v)
+}
+
 fn read_str_body<'s, S, T>(source: &'s mut S, text: &T, len: u32) -> Result<String>
 where
     S: Read + 's,
     T: TextCodec,
 {
-    let mut v = Vec::new();
-    v.try_reserve_exact(len as usize)
-        .context(AllocationSizeSnafu)?;
-    v.resize(len as usize, 0);
-    source.read_exact(&mut v).context(ReadValueDataSnafu)?;
+    let v = read_exact_bytes(source, len).context(ReadValueDataSnafu)?;
 
     text.decode(&v)
         .context(DecodeTextSnafu { name: text.name() })
@@ -646,11 +654,7 @@ impl FileMetaTable {
                 }
                 Tag(0x0002, 0x0013) => {
                     // Implementation Version Name
-                    let mut v = Vec::new();
-                    v.try_reserve_exact(elem_len as usize)
-                        .context(AllocationSizeSnafu)?;
-                    v.resize(elem_len as usize, 0);
-                    file.read_exact(&mut v).context(ReadValueDataSnafu)?;
+                    let v = read_exact_bytes(&mut file, elem_len).context(ReadValueDataSnafu)?;
 
                     builder.implementation_version_name(
                         text.decode(&v)
@@ -659,11 +663,7 @@ impl FileMetaTable {
                 }
                 Tag(0x0002, 0x0016) => {
                     // Source Application Entity Title
-                    let mut v = Vec::new();
-                    v.try_reserve_exact(elem_len as usize)
-                        .context(AllocationSizeSnafu)?;
-                    v.resize(elem_len as usize, 0);
-                    file.read_exact(&mut v).context(ReadValueDataSnafu)?;
+                    let v = read_exact_bytes(&mut file, elem_len).context(ReadValueDataSnafu)?;
 
                     builder.source_application_entity_title(
                         text.decode(&v)
@@ -672,11 +672,7 @@ impl FileMetaTable {
                 }
                 Tag(0x0002, 0x0017) => {
                     // Sending Application Entity Title
-                    let mut v = Vec::new();
-                    v.try_reserve_exact(elem_len as usize)
-                        .context(AllocationSizeSnafu)?;
-                    v.resize(elem_len as usize, 0);
-                    file.read_exact(&mut v).context(ReadValueDataSnafu)?;
+                    let v = read_exact_bytes(&mut file, elem_len).context(ReadValueDataSnafu)?;
 
                     builder.sending_application_entity_title(
                         text.decode(&v)
@@ -685,11 +681,7 @@ impl FileMetaTable {
                 }
                 Tag(0x0002, 0x0018) => {
                     // Receiving Application Entity Title
-                    let mut v = Vec::new();
-                    v.try_reserve_exact(elem_len as usize)
-                        .context(AllocationSizeSnafu)?;
-                    v.resize(elem_len as usize, 0);
-                    file.read_exact(&mut v).context(ReadValueDataSnafu)?;
+                    let v = read_exact_bytes(&mut file, elem_len).context(ReadValueDataSnafu)?;
 
                     builder.receiving_application_entity_title(
                         text.decode(&v)
@@ -698,11 +690,7 @@ impl FileMetaTable {
                 }
                 Tag(0x0002, 0x0100) => {
                     // Private Information Creator UID
-                    let mut v = Vec::new();
-                    v.try_reserve_exact(elem_len as usize)
-                        .context(AllocationSizeSnafu)?;
-                    v.resize(elem_len as usize, 0);
-                    file.read_exact(&mut v).context(ReadValueDataSnafu)?;
+                    let v = read_exact_bytes(&mut file, elem_len).context(ReadValueDataSnafu)?;
 
                     builder.private_information_creator_uid(
                         text.decode(&v)
@@ -711,11 +699,7 @@ impl FileMetaTable {
                 }
                 Tag(0x0002, 0x0102) => {
                     // Private Information
-                    let mut v = Vec::new();
-                    v.try_reserve_exact(elem_len as usize)
-                        .context(AllocationSizeSnafu)?;
-                    v.resize(elem_len as usize, 0);
-                    file.read_exact(&mut v).context(ReadValueDataSnafu)?;
+                    let v = read_exact_bytes(&mut file, elem_len).context(ReadValueDataSnafu)?;
 
                     builder.private_information(v)
                 }
@@ -866,14 +850,20 @@ impl FileMetaTable {
             writer,
             EncoderFor::new(ExplicitVRLittleEndianEncoder::default()),
         );
+
+        // Recompute the group length from the fields actually being
+        // written rather than trusting `self.information_group_length`:
+        // it may have been carried over verbatim from a source file
+        // whose declared group length did not match its own element
+        // contents, which would otherwise produce a self-inconsistent
+        // (and unparsable) output file.
+        let mut meta = self.clone();
+        meta.update_information_group_length();
+
         //There are no sequences in the `FileMetaTable`, so the value of `invalidate_sq_len` is
         //not important
-        dset.write_sequence(
-            self.clone()
-                .into_element_iter()
-                .flat_map(IntoTokens::into_tokens),
-        )
-        .context(WriteSetSnafu)?;
+        dset.write_sequence(meta.into_element_iter().flat_map(IntoTokens::into_tokens))
+            .context(WriteSetSnafu)?;
 
         dset.flush().context(WriteSetSnafu)
     }
@@ -1436,7 +1426,14 @@ impl FileMetaTableBuilder {
 }
 
 fn dicom_len<T: AsRef<str>>(x: T) -> u32 {
-    (x.as_ref().len() as u32 + 1) & !1
+    // Count chars, not UTF-8 bytes: file meta group text is always written
+    // using the default character repertoire (ISO 8859-1 via
+    // `DefaultCharacterSetCodec`), which encodes exactly one byte per
+    // character. A `String` built from non-ASCII bytes decoded through
+    // that codec stores multi-byte UTF-8 sequences in memory (e.g. 2 bytes
+    // per Latin-1 character above U+007F), so `str::len()` overcounts the
+    // number of bytes that will actually be written on encode.
+    (x.as_ref().chars().count() as u32 + 1) & !1
 }
 
 #[cfg(test)]

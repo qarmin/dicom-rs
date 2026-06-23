@@ -446,7 +446,12 @@ where
 
                 if self.offset_table_next {
                     // offset table
-                    let mut offset_table = Vec::with_capacity(len);
+                    //
+                    // Note: capacity is intentionally not pre-allocated from `len`,
+                    // since it is an untrusted value read from the data set
+                    // and could otherwise be used to force a huge up-front allocation.
+                    // `read_u32_to_vec` grows the vector incrementally instead.
+                    let mut offset_table = Vec::new();
 
                     self.offset_table_next = false;
 
@@ -461,7 +466,12 @@ where
                     )
                 } else {
                     // item value
-                    let mut value = Vec::with_capacity(len);
+                    //
+                    // Note: capacity is intentionally not pre-allocated from `len`,
+                    // since it is an untrusted value read from the data set
+                    // and could otherwise be used to force a huge up-front allocation.
+                    // `read_to_vec` grows the vector incrementally instead.
+                    let mut value = Vec::new();
 
                     // need to pop item delimiter on the next iteration
                     self.delimiter_check_pending = true;
