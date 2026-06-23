@@ -287,6 +287,9 @@ where
                 return Ok(0);
             }
 
+            // reject PDUs that exceed max_pdu_length + headers overhead
+            let max_buffer_size =
+                (self.max_pdu_length as usize) + (PDU_PDV_HEADER_SIZE * 2);
             let mut reader = BufReader::new(&mut self.stream);
             let msg = loop {
                 let mut buf = Cursor::new(&self.read_buffer[..]);
@@ -298,6 +301,15 @@ where
                         break pdu;
                     }
                     None => {
+                        // parse returned None: not enough bytes yet
+                        if self.read_buffer.len() >= max_buffer_size {
+                            // already have more than a max-size PDU and still can't parse
+                            return Err(std::io::Error::other(format!(
+                                "PDU too large: {} bytes buffered without a complete PDU (max {})",
+                                self.read_buffer.len(),
+                                max_buffer_size,
+                            )));
+                        }
                         // Reset position
                         buf.set_position(0)
                     }
@@ -675,6 +687,8 @@ pub mod non_blocking {
                     max_pdu_length,
                     ..
                 } = &mut *self;
+                let max_buffer_size =
+                    (max_pdu_length as usize) + (PDU_PDV_HEADER_SIZE * 2);
                 let mut reader = BufReader::new(stream);
                 let msg = loop {
                     let mut buf = Cursor::new(&read_buffer[..]);
@@ -686,6 +700,14 @@ pub mod non_blocking {
                             break pdu;
                         }
                         None => {
+                            // parse returned None: not enough bytes yet
+                            if read_buffer.len() >= max_buffer_size {
+                                return Poll::Ready(Err(std::io::Error::other(format!(
+                                    "PDU too large: {} bytes buffered without a complete PDU (max {})",
+                                    read_buffer.len(),
+                                    max_buffer_size,
+                                ))));
+                            }
                             // Reset position
                             buf.set_position(0)
                         }
