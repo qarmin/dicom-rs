@@ -928,6 +928,21 @@ impl HasLength for FileMetaAttribute<'_> {
                     .map(|s| s.len() as u32)
                     .unwrap_or(0),
             ),
+            tags::FILE_META_INFORMATION_VERSION => Length(2),
+            tags::RECEIVING_APPLICATION_ENTITY_TITLE => Length(
+                self.meta
+                    .receiving_application_entity_title
+                    .as_ref()
+                    .map(|s| s.len() as u32)
+                    .unwrap_or(0),
+            ),
+            tags::PRIVATE_INFORMATION => Length(
+                self.meta
+                    .private_information
+                    .as_ref()
+                    .map(|v| v.len() as u32)
+                    .unwrap_or(0),
+            ),
             _ => unreachable!(),
         }
     }
