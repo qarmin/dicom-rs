@@ -1438,6 +1438,9 @@ where
                 }
                 // navigate further down
                 AttributeSelectorStep::Nested { tag, item } => {
+                    // invalidate this ancestor's cached length; writing the leaf
+                    // changes the encoded size of everything above it
+                    obj.len = Length::UNDEFINED;
                     let e =
                         obj.entries
                             .get_mut(tag)
@@ -1539,6 +1542,9 @@ where
                             });
                         }
                     };
+
+                    // invalidate this ancestor's cached length before descending
+                    obj.len = Length::UNDEFINED;
 
                     // get items
                     let items = obj
