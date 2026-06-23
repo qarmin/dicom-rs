@@ -95,6 +95,18 @@ impl Encode for ExplicitVRLittleEndianEncoder {
     where
         W: Write,
     {
+        if de.tag().group() == 0xFFFE {
+            // item and (item/sequence) delimiters never carry a VR or
+            // reserved field, on either side of the wire: the decoder
+            // always reads just tag + 4-byte length for this group
+            // (see `ExplicitVRLittleEndianDecoder::decode_header`).
+            let mut buf = [0u8; 8];
+            LittleEndian::write_u16(&mut buf[0..], de.tag().group());
+            LittleEndian::write_u16(&mut buf[2..], de.tag().element());
+            LittleEndian::write_u32(&mut buf[4..], de.length().0);
+            to.write_all(&buf).context(WriteHeaderSnafu)?;
+            return Ok(8);
+        }
         match de.vr() {
             // PS3.5 7.1.2:
             // for VRs of AE, AS, AT, CS, DA, DS, DT, FL, FD, IS, LO, LT, PN,
