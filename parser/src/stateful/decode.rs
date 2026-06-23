@@ -1088,7 +1088,16 @@ where
     }
 
     fn read_u32_to_vec(&mut self, length: u32, vec: &mut Vec<u32>) -> Result<()> {
-        self.read_u32((length >> 2) as usize, vec)
+        if length % 4 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("offset table length {length} is not a multiple of 4"),
+            ))
+            .context(ReadValueDataSnafu {
+                position: self.position,
+            });
+        }
+        self.read_u32((length / 4) as usize, vec)
     }
 
     fn read_to<W>(&mut self, length: u32, mut out: W) -> Result<()>
