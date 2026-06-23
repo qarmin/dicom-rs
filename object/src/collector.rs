@@ -448,14 +448,15 @@ where
                 odd_length,
                 charset_override,
             } => {
-                let src = src.take().unwrap();
-
-                // look up transfer syntax
+                // look up transfer syntax BEFORE taking the reader, so that a
+                // failed lookup leaves self intact and a retry doesn't unwrap None
                 let ts = ts_index
                     .get(ts_uid)
                     .context(UnrecognizedTransferSyntaxSnafu {
                         ts_uid: ts_uid.to_string(),
                     })?;
+
+                let src = src.take().unwrap();
 
                 let mut options = LazyDataSetReaderOptions::default();
                 options.odd_length = *odd_length;
