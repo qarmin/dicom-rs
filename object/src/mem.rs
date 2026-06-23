@@ -2228,6 +2228,12 @@ where
             entries.insert(elem.tag(), elem);
         }
 
+        // When building a sequence item, the only valid exit is through DataToken::ItemEnd.
+        // If the stream is exhausted first, the item is truncated/malformed.
+        if in_item {
+            return PrematureEndSnafu.fail();
+        }
+
         Ok(InMemDicomObject {
             entries,
             dict,
