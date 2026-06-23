@@ -587,11 +587,11 @@ fn store_req_command(
         DataElement::new(tags::MESSAGE_ID, VR::US, dicom_value!(U16, [message_id])),
         //priority
         DataElement::new(tags::PRIORITY, VR::US, dicom_value!(U16, [0x0000])),
-        // data set type
+        // data set type: 0x0001 = Data Set present (any value != 0x0101)
         DataElement::new(
             tags::COMMAND_DATA_SET_TYPE,
             VR::US,
-            dicom_value!(U16, [0x0000]),
+            dicom_value!(U16, [0x0001]),
         ),
         // affected SOP Instance UID
         DataElement::new(
