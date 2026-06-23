@@ -746,6 +746,10 @@ where
     /// Retrieves the primitive value as a DICOM tag.
     pub fn to_tag(&self) -> Result<Tag, CastValueError> {
         match self {
+            Value::Primitive(PrimitiveValue::Tags(v)) if v.is_empty() => Err(CastValueError {
+                requested: "tag",
+                got: ValueType::Empty,
+            }),
             Value::Primitive(PrimitiveValue::Tags(v)) => Ok(v[0]),
             _ => Err(CastValueError {
                 requested: "tag",
