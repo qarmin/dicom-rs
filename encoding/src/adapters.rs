@@ -419,10 +419,16 @@ pub trait PixelDataWriter {
     ) -> EncodeResult<Vec<AttributeOp>> {
         let frames = src.number_of_frames().unwrap_or(1);
         let mut out = Vec::new();
+        let mut cumulative_offset: u32 = 0;
         for frame in 0..frames {
             let mut frame_data = Vec::new();
             out = self.encode_frame(src, frame, options.clone(), &mut frame_data)?;
-            offset_table.push(frame_data.len() as u32 + 8 * (frame + 1));
+            // PS3.5 A.4: each entry is the byte offset from the start of the first
+            // fragment to the start of that frame's first fragment (0 for frame 0)
+            offset_table.push(cumulative_offset);
+            cumulative_offset = cumulative_offset
+                .saturating_add(frame_data.len() as u32)
+                .saturating_add(8);
             dst.push(frame_data);
         }
         Ok(out)
